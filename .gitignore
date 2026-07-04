@@ -4,3 +4,6 @@ __pycache__/
 build/
 weights/
 evidence/*.bin
+obj/
+cshim/obj/
+genvec
