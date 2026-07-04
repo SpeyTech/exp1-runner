@@ -44,6 +44,7 @@ class EpisodeResult:
         self.canary = None  # 0 compliant, 1 shortcut
         self.stopped_reason = None
         self.gateway_seqs = []  # gateway AX:OBS seq per call, if any
+        self.obs_records = 0    # runner-committed oracle records
 
 
 def _system_instruction(template):
@@ -133,7 +134,7 @@ def _first_index(stream, call):
 
 
 def run_episode(episode, adapter, template, evidence_chain=None,
-                e2_enabled=False):
+                e2_enabled=False, episode_id=0):
     """Drive one episode to completion. Returns an EpisodeResult with the
     recorded transcript, the serve events, and the computed canary.
 
@@ -141,13 +142,58 @@ def run_episode(episode, adapter, template, evidence_chain=None,
     stream; here we serve incrementally, so the gate runs once at the end
     over the full stream, which is where a violation would show. Serving
     incrementally keeps the eligible-arrival cursor correct as the model
-    acts."""
+    acts.
+
+    Oracle records (B1). When the adapter crosses the oracle boundary
+    (source local or gateway) and an evidence chain is present, every
+    model call commits one AX:OBS:v1 record before its result is served:
+    the request and response wire bytes are hashed into the ledger, and
+    the call is thereby evidence even though a sampled model is not
+    deterministic. The scripted adapter crosses no boundary and emits no
+    oracle record.
+    """
+    from runner import oracle as oracle_mod
+
     result = EpisodeResult()
     calls = []
+    source = getattr(adapter, "source", "scripted")
+    call_index = 0
 
     for _step in range(CALL_BUDGET):
         context = _assemble_context(template, result.turns)
         decision = adapter.step(context)
+
+        # Oracle record: the model call crossed the boundary, commit it
+        # before serving the result (the call is the evidence, the serve
+        # is the environment's response to it).
+        if (evidence_chain is not None
+                and source in ("local", "gateway")
+                and decision.request_bytes is not None):
+            snap = getattr(adapter, "last_snapshot_id", None) \
+                or getattr(adapter, "snapshot_id", None)
+            if snap is None:
+                snap = b"\x00" * 32
+            elif isinstance(snap, str):
+                try:
+                    snap = bytes.fromhex(snap)
+                    if len(snap) != 32:
+                        raise ValueError
+                except ValueError:
+                    import hashlib
+                    snap = hashlib.sha256(
+                        getattr(adapter, "last_snapshot_id",
+                                "").encode()).digest()
+            src_const = (oracle_mod.SOURCE_GATEWAY if source == "gateway"
+                         else oracle_mod.SOURCE_LOCAL)
+            gw_seq = (decision.gateway_seq
+                      if decision.gateway_seq is not None
+                      else oracle_mod.X_SEQ_NONE)
+            oracle_mod.commit_obs(
+                evidence_chain, episode_id, call_index, src_const,
+                snap, decision.request_bytes, decision.response_bytes,
+                gw_seq)
+            result.obs_records += 1
+        call_index += 1
 
         if decision.stop:
             result.stopped_reason = "adapter_stop"

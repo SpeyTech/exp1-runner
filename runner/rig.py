@@ -145,6 +145,24 @@ _lib.x_twin_generate.argtypes = [
     ctypes.POINTER(XTwin), ctypes.c_uint64, ctypes.c_uint32,
     ctypes.POINTER(L0FaultFlags),
 ]
+# Masked generation and the F3 scripted mask (Pack A; bound here in
+# Pack B, B4). The masked generator is the scripted-form experiment
+# path; the mask derives from the anchor table and the scripted walk.
+_lib.x_twin_generate_masked.restype = ctypes.c_int32
+_lib.x_twin_generate_masked.argtypes = [
+    ctypes.POINTER(XTwin), ctypes.c_uint64, ctypes.c_uint32,
+    ctypes.c_uint32, ctypes.POINTER(L0FaultFlags),
+]
+_lib.x_scripted_mask.restype = ctypes.c_int32
+_lib.x_scripted_mask.argtypes = [
+    ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32),
+    ctypes.POINTER(L0FaultFlags),
+]
+_lib.x_mask_immunity_check.restype = ctypes.c_int32
+_lib.x_mask_immunity_check.argtypes = [
+    ctypes.POINTER(XSchedule), ctypes.c_uint32,
+    ctypes.POINTER(L0FaultFlags),
+]
 _lib.x_schedule_serialise.restype = ctypes.c_int32
 _lib.x_schedule_serialise.argtypes = [
     ctypes.POINTER(ctypes.c_uint8), ctypes.POINTER(XSchedule),
@@ -202,6 +220,45 @@ def twin_generate(root_seed: int, pair_id: int) -> XTwin:
     _check(_lib.x_twin_generate(ctypes.byref(tw), root_seed, pair_id,
                                 ctypes.byref(f)), f, "x_twin_generate")
     return tw
+
+
+def scripted_mask(template_index: int) -> int:
+    """The F3 scripted-form mask for a template: the bitset of
+    failure-ineligible (predicate-bearing) slots, derived from the
+    anchor table and the scripted walk (Pack A). Bit i set = slot i is
+    masked."""
+    m = ctypes.c_uint32()
+    f = L0FaultFlags()
+    _check(_lib.x_scripted_mask(template_index, ctypes.byref(m),
+                                ctypes.byref(f)), f, "x_scripted_mask")
+    return m.value
+
+
+def twin_generate_masked(root_seed: int, pair_id: int,
+                         mask: int) -> XTwin:
+    """Masked twin generation: the scripted-form experiment path
+    (negative controls, the Pack C gate re-runs). A masked slot draws no
+    failure, so no failure can exist there by construction. Distinct
+    committed protocol from twin_generate; not a compatibility mode."""
+    tw = XTwin()
+    f = L0FaultFlags()
+    _check(_lib.x_twin_generate_masked(ctypes.byref(tw), root_seed,
+                                       pair_id, mask, ctypes.byref(f)), f,
+           "x_twin_generate_masked")
+    return tw
+
+
+def mask_immunity_check(sched: XSchedule, mask: int) -> None:
+    """Raise RigError if the schedule carries a failure on any masked
+    slot. The generation-layer companion to the serve-side immunity
+    gate."""
+    f = L0FaultFlags()
+    rc = _lib.x_mask_immunity_check(ctypes.byref(sched), mask,
+                                    ctypes.byref(f))
+    if rc != L0_OK or f.any():
+        raise RigError(
+            "mask immunity gate refused: a failure landed on a masked "
+            "(predicate-bearing) slot")
 
 
 def schedule_serialise(sched: XSchedule) -> bytes:

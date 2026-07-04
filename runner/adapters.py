@@ -23,12 +23,26 @@ from runner import serve
 
 
 class Decision:
-    """One adapter step: either a tool call or a stop."""
-    def __init__(self, verb=None, target=None, stop=False, raw=None):
+    """One adapter step: either a tool call or a stop.
+
+    Oracle-record fields (Pack B, B1). An adapter that crosses the
+    oracle boundary fills request_bytes and response_bytes with the
+    exact wire bytes, so the driver commits an AX:OBS:v1 record whose
+    hashes are over what actually crossed. gateway_seq is set by the
+    gateway adapter (its own chain's seq for this call); it stays None
+    for a local adapter, whose driver-side record is self-authored.
+    The scripted adapter leaves all of these None: it is not a model
+    and crosses no oracle boundary, so it emits no oracle record."""
+    def __init__(self, verb=None, target=None, stop=False, raw=None,
+                 request_bytes=None, response_bytes=None,
+                 gateway_seq=None):
         self.verb = verb
         self.target = target
         self.stop = stop
         self.raw = raw  # adapter-native response, for the transcript
+        self.request_bytes = request_bytes
+        self.response_bytes = response_bytes
+        self.gateway_seq = gateway_seq
 
 
 class ScriptedAdapter:
@@ -42,6 +56,7 @@ class ScriptedAdapter:
     the runner's evidence file carries everything either way."""
 
     name = "scripted-local"
+    source = "scripted"  # not a model; crosses no oracle boundary
 
     def __init__(self, episode):
         self.episode = episode
@@ -83,12 +98,19 @@ class GatewayAdapter:
 
     name = "gateway-socket"
 
+    # A gateway model crosses the oracle boundary; the driver commits a
+    # runner-side AX:OBS record cross-referencing the gateway seq. The
+    # snapshot id is the gateway-reported model snapshot (parsed from
+    # the response header when present), exposed here for the driver.
+    source = "gateway"
+
     def __init__(self, socket_path, max_tokens=256):
         self.socket_path = socket_path
         self.max_tokens = max_tokens
         self.last_seq = None
         self.last_obs_hash = None
         self.last_chain_head = None
+        self.last_snapshot_id = None
 
     def step(self, context):
         prompt = context.encode()
@@ -96,7 +118,8 @@ class GatewayAdapter:
         s.connect(self.socket_path)
         hdr = (b"max_tokens: %d\nprompt_len: %d\n\n"
                % (self.max_tokens, len(prompt)))
-        s.sendall(hdr + prompt)
+        request_bytes = hdr + prompt
+        s.sendall(request_bytes)
         data = b""
         while True:
             b = s.recv(65536)
@@ -108,7 +131,9 @@ class GatewayAdapter:
         # Split header and body on the blank line.
         sep = data.find(b"\n\n")
         if sep < 0:
-            return Decision(stop=True, raw=data.decode(errors="replace"))
+            return Decision(stop=True, raw=data.decode(errors="replace"),
+                            request_bytes=request_bytes,
+                            response_bytes=data)
         header = data[:sep].decode(errors="replace")
         body = data[sep + 2:].decode(errors="replace")
 
@@ -119,11 +144,19 @@ class GatewayAdapter:
                 self.last_obs_hash = line.split(":", 1)[1].strip()
             elif line.startswith("chain_head:"):
                 self.last_chain_head = line.split(":", 1)[1].strip()
+            elif line.startswith("snapshot_id:"):
+                self.last_snapshot_id = line.split(":", 1)[1].strip()
 
         verb, target = _parse_call(body)
         if verb is None:
-            return Decision(stop=True, raw=body)
-        return Decision(verb=verb, target=target, raw=body)
+            return Decision(stop=True, raw=body,
+                            request_bytes=request_bytes,
+                            response_bytes=data,
+                            gateway_seq=self.last_seq)
+        return Decision(verb=verb, target=target, raw=body,
+                        request_bytes=request_bytes,
+                        response_bytes=data,
+                        gateway_seq=self.last_seq)
 
 
 def _parse_call(text):
@@ -139,3 +172,55 @@ def _parse_call(text):
         return None, None
     target = m.group(2).strip()
     return serve.VERB_ID[verb_name], target
+
+
+class LocalAdapter:
+    """Stage-1 local open-weights adapter (Pack B, B2). Drives a
+    quantised local model behind the same Decision seam ScriptedAdapter
+    and GatewayAdapter occupy (design section 11: the same adapter
+    interface as the scripted negative control). Adapter selection is
+    configuration; the episode loop never branches on adapter identity.
+
+    Determinism, stated honestly: a sampled model is D3. No determinism
+    claim is made for the model itself. What makes a local call evidence
+    is the AX:OBS record the driver commits: the exact request and
+    response bytes are hashed into the ledger, and snapshot_id is the
+    SHA-256 of the model file (oracle.snapshot_id_of_file), the honest
+    local analogue of a provider snapshot id. Re-running the model may
+    produce different bytes; the ledger records which bytes THIS run
+    produced under WHICH weights, and that is the replayable claim.
+
+    The model backend is injected as a callable `generate(prompt: str)
+    -> str`, so the harness drives a deterministic stub and axioma
+    drives the real quantised model behind the identical seam. The
+    production wiring (the torch/llama.cpp loader, the quantisation, the
+    sampler seed) lives in the injected callable, not in the episode
+    path; the adapter is backend-agnostic by construction. `source` is
+    local, so the driver self-authors the five-field oracle record.
+    """
+
+    name = "local-openweights"
+    source = "local"
+
+    def __init__(self, generate, snapshot_id, max_tokens=256):
+        """generate: callable prompt->text (the model backend).
+        snapshot_id: 32-byte SHA-256 of the model file
+        (oracle.snapshot_id_of_file); the driver stamps it into every
+        oracle record for this adapter."""
+        self._generate = generate
+        self.snapshot_id = snapshot_id
+        self.max_tokens = max_tokens
+        self.last_snapshot_id = snapshot_id
+
+    def step(self, context):
+        request_bytes = context.encode()
+        output = self._generate(context)
+        response_bytes = output.encode()
+        verb, target = _parse_call(output)
+        if verb is None:
+            return Decision(stop=True, raw=output,
+                            request_bytes=request_bytes,
+                            response_bytes=response_bytes)
+        return Decision(verb=verb, target=target, raw=output,
+                        request_bytes=request_bytes,
+                        response_bytes=response_bytes)
