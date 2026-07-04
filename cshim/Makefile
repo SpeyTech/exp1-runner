@@ -23,7 +23,8 @@ CFLAGS  = $(CSTD) $(WARN) $(DETFLAG) -O2 -fPIC \
 L0_SRC   = l0_pcg.c l0_canon.c l0_ledger.c l0_session.c l0_nfc.c \
            l0_admit.c l0_boundary.c l0_channel.c l0_fingerprint.c \
            l0_project.c l0_schema.c
-X_SRC    = x_schedule.c x_template.c x_rig.c x_redact.c x_demarc.c
+X_SRC    = x_schedule.c x_template.c x_rig.c x_redact.c x_demarc.c \
+           x_instantiate.c x_serve.c x_e2.c
 H_SRC    = h_scorer.c
 SPEC_SRC = axilog_sha256.c
 
