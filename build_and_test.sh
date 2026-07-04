@@ -31,7 +31,11 @@ make -C cshim clean >/dev/null
 make -C cshim L0="$L0" SPEC="$SPEC"
 
 echo "running tests"
-EXP1_LIBRIG="$PWD/cshim/librig.so" python3 tests/test_rig.py
-EXP1_LIBRIG="$PWD/cshim/librig.so" python3 tests/test_chain.py
+BATTERY=${EXP1_BATTERY:-"$L0/exp1/battery/task-battery-v1.json"}
+export EXP1_LIBRIG="$PWD/cshim/librig.so"
+export EXP1_BATTERY="$BATTERY"
+python3 tests/test_rig.py
+python3 tests/test_chain.py
+python3 tests/test_agent.py
 
 echo "all green"
