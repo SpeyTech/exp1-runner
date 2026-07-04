@@ -78,6 +78,61 @@ def test_tamper_refused():
     os.unlink(p)
 
 
+def test_fcc_tags_accepted():
+    """The five FCC-001 claim tags append cleanly (registered DVEC v1.4)."""
+    p = "/tmp/exp1_chain_fcc.bin"
+    if os.path.exists(p):
+        os.unlink(p)
+    c = chain.EvidenceChain(p)
+    for tag in (chain.TAG_FCC_C, chain.TAG_FCC_TS, chain.TAG_FCC_DEV,
+                chain.TAG_FCC_REG, chain.TAG_FCC_VERDICT):
+        c.append(tag, b'{"fcc":1}')
+    assert c.seq == 5
+    c.close()
+    os.unlink(p)
+
+
+def test_unregistered_tag_refused():
+    """The closure witness: an unregistered tag is still refused on append."""
+    p = "/tmp/exp1_chain_junk.bin"
+    if os.path.exists(p):
+        os.unlink(p)
+    c = chain.EvidenceChain(p)
+    refused = False
+    try:
+        c.append(b"AX:JUNK:v1", b'{"x":1}')
+    except chain.ChainError:
+        refused = True
+    c.close()
+    os.unlink(p)
+    assert refused, "unregistered tag was not refused"
+
+
+def test_registry_drift_guard():
+    """Y5: chain.py REGISTERED_TAGS must equal the canonical dvec.h
+    AX_TAG_* evidence defines. Derive from source, applied to the registry
+    itself. Fails the moment any copy lags. dvec.h is located via
+    EXP1_DVEC_H or the estate sibling layout."""
+    import re
+    dvec = os.environ.get("EXP1_DVEC_H")
+    if dvec is None:
+        here = pathlib.Path(__file__).resolve().parent.parent
+        dvec = str(here.parent / "axioma-spec" / "include" / "axilog"
+                   / "dvec.h")
+    if not os.path.exists(dvec):
+        # cannot locate canonical source; skip rather than false-pass
+        print("  SKIP test_registry_drift_guard: dvec.h not found at", dvec)
+        return
+    text = open(dvec).read()
+    # AX_TAG_* string defines are the evidence registry; chain tags use
+    # AX_CHAIN_/DVM_CHAIN_ prefixes and are excluded.
+    defines = dict(re.findall(r'#define\s+(AX_TAG_\w+)\s+"([^"]+)"', text))
+    canonical = {v.encode() for v in defines.values()}
+    assert chain.REGISTERED_TAGS == canonical, (
+        "registry drift: chain.py %r != dvec.h %r"
+        % (chain.REGISTERED_TAGS, canonical))
+
+
 def _run_all():
     passed = 0
     for name, fn in sorted(globals().items()):

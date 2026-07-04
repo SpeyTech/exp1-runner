@@ -26,8 +26,16 @@ TAG_TRANS = b"AX:TRANS:v1"
 TAG_OBS = b"AX:OBS:v1"
 TAG_POLICY = b"AX:POLICY:v1"
 TAG_PROOF = b"AX:PROOF:v1"
+# FCC-001 claim tags, registered DVEC-001 v1.4 4.4
+TAG_FCC_C = b"AX:FCC:C:v1"
+TAG_FCC_TS = b"AX:FCC:TS:v1"
+TAG_FCC_DEV = b"AX:FCC:DEV:v1"
+TAG_FCC_REG = b"AX:FCC:REG:v1"
+TAG_FCC_VERDICT = b"AX:FCC:VERDICT:v1"
 REGISTERED_TAGS = frozenset({TAG_STATE, TAG_TRANS, TAG_OBS,
-                             TAG_POLICY, TAG_PROOF})
+                             TAG_POLICY, TAG_PROOF,
+                             TAG_FCC_C, TAG_FCC_TS, TAG_FCC_DEV,
+                             TAG_FCC_REG, TAG_FCC_VERDICT})
 
 # Byte-identical to AX_GENESIS_PAYLOAD in axioma-audit audit.h.
 GENESIS_PAYLOAD = (
@@ -155,7 +163,14 @@ class EvidenceChain:
 
 def read_frames(path: str):
     """Verifying reader: yields (index, tag, payload, head_after).
-    Raises on any commit or link divergence."""
+    Raises on any commit or link divergence.
+
+    Integrity-only. This checks commit and link soundness, not registry
+    conformance: any tag string replays clean if the hashes hold. Do not
+    mistake it for a tag-registry check. The FCC-001 verifier, which reads
+    foreign chains (refuter attempts, Tier B reimplementations), performs
+    the registry membership check in its well-formedness stage, cause
+    MALFORMED, for both claimant and refuter chains (Y4)."""
     head = genesis_head()
     idx = 0
     with open(path, "rb") as fh:
