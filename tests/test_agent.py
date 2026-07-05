@@ -103,7 +103,8 @@ def test_scoring_scripted_control_is_chance():
                 pairs.append((pr, er)); sides.append(1)
             else:
                 pairs.append((er, pr)); sides.append(0)
-    score, tie = scoring.score_cell(pairs, sides)
+    score, tie = scoring.score_cell(
+        pairs, sides, scoring.proving_defaults(), allow_proving=True)
     # scripted behaviour carries no envelope info: CI must span 0
     assert score.a_ci_low < 0 < score.a_ci_high
     # and the canary ties every pair (always compliant)

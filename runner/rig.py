@@ -173,6 +173,15 @@ _lib.x_rig_run_scripted.argtypes = [
     ctypes.POINTER(XTranscript), ctypes.POINTER(XSchedule),
     ctypes.POINTER(L0FaultFlags),
 ]
+# E2 render arm of the scripted rig (Pack A, A2; bound here in Pack C for
+# the E2-on cross-redactor check). The C rig DOES have an E2 path; the
+# runner E2 render is the paid-run arm, this is the scripted E2 render of
+# record, and the cross-redactor property runs over both input domains.
+_lib.x_rig_run_scripted_e2.restype = ctypes.c_int32
+_lib.x_rig_run_scripted_e2.argtypes = [
+    ctypes.POINTER(XTranscript), ctypes.POINTER(XSchedule),
+    ctypes.POINTER(L0FaultFlags),
+]
 _lib.x_rig_flatten.restype = ctypes.c_int32
 _lib.x_rig_flatten.argtypes = [
     ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t),
@@ -276,6 +285,19 @@ def rig_run_scripted(sched: XSchedule) -> XTranscript:
     _check(_lib.x_rig_run_scripted(ctypes.byref(tr), ctypes.byref(sched),
                                    ctypes.byref(f)), f,
            "x_rig_run_scripted")
+    return tr
+
+
+def rig_run_scripted_e2(sched: XSchedule) -> XTranscript:
+    """The scripted E2 render of record: every tool result padded to the
+    committed floor plus size_pad (Pack A, A2). The cross-redactor gate
+    compares both redactors over this transcript on the E2-on domain."""
+    tr = XTranscript()
+    f = L0FaultFlags()
+    _check(_lib.x_rig_run_scripted_e2(ctypes.byref(tr),
+                                      ctypes.byref(sched),
+                                      ctypes.byref(f)), f,
+           "x_rig_run_scripted_e2")
     return tr
 
 
