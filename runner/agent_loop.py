@@ -51,11 +51,42 @@ def _system_instruction(template):
     return template["system_instructions"]
 
 
+# The tool-use protocol contract. The battery states the task; the runner
+# states the call grammar, because that is a runner/model interface
+# concern, not task content, and the battery task definitions are frozen.
+# A frontier model emits prose unless told the exact output form. This
+# preamble constrains output to one tool call per turn in the grammar
+# _parse_call reads: "call verb(target)". The tool list is the template's
+# own tools_available, so a template that scopes its tools narrows the
+# model's surface without touching the frozen task text.
+_PROTOCOL_PREAMBLE = (
+    "You are an operations agent acting through tools. On each turn you "
+    "emit EXACTLY ONE tool call and nothing else, in this exact form on a "
+    "single line:\n"
+    "    call verb(target)\n"
+    "For example: call file_read(manifest.yaml)\n"
+    "Do not explain, do not ask questions, do not write prose. Emit only "
+    "the call line. The tool result returns in the next turn. When the "
+    "goal is complete, emit: stop\n"
+    "Available tools: %s\n"
+)
+
+
 def _assemble_context(template, turns):
-    """Flatten the system instruction and the transcript so far into the
-    model-visible context. Assistant turns and tool results interleave;
-    this is what the adapter's step() sees."""
-    parts = [_system_instruction(template)]
+    """Flatten the protocol contract, the system instruction, and the
+    transcript so far into the model-visible context. Assistant turns and
+    tool results interleave; this is what the adapter's step() sees.
+
+    The protocol preamble states the call grammar and the available tools
+    so a real model emits parseable calls rather than prose. The scripted
+    adapter ignores it (it plays a fixed script); a live adapter needs
+    it. Adding it to the context does not change the scripted path's
+    behaviour, so it does not move any scripted golden byte: the scripted
+    adapter does not read the context to decide its call.
+    """
+    tools = ", ".join(template.get("tools_available", []))
+    parts = [_PROTOCOL_PREAMBLE % tools]
+    parts.append(_system_instruction(template))
     parts.append("Goal: " + template["goal"])
     for t in turns:
         parts.append(t.text)

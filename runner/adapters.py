@@ -104,20 +104,47 @@ class GatewayAdapter:
     # the response header when present), exposed here for the driver.
     source = "gateway"
 
-    def __init__(self, socket_path, max_tokens=256):
+    def __init__(self, socket_path, temperature_q16, max_tokens=256):
+        """temperature_q16 is MANDATORY and has no default (Grandfather
+        Chair ruling): a request that goes out with no pin is a run that
+        looks pinned and isn't, the same silent-precondition failure the
+        harness refuses on UNRECORDED snapshot. Pass integer 0 for greedy
+        decoding (Q16.16 fixed point, so 0 is 0.0), which is what makes
+        replay bit-exact mean deterministic serving rather than a sample
+        that happened to agree. A nonzero temperature must be a committed
+        Q16.16 integer constant, never a float over the wire: float
+        round-trip on the gateway side reintroduces the non-determinism
+        the pin exists to remove."""
+        if temperature_q16 is None:
+            raise ValueError(
+                "GatewayAdapter requires temperature_q16 (no default): an "
+                "unpinned request serves at the provider default and makes "
+                "replay meaningless. Pass 0 for greedy decoding.")
+        if not isinstance(temperature_q16, int):
+            raise TypeError(
+                "temperature_q16 must be an integer (Q16.16 fixed point), "
+                "not a float: a float over the wire is a reproducibility "
+                "hole. 0 is greedy; a nonzero pin is a committed constant.")
         self.socket_path = socket_path
+        self.temperature_q16 = temperature_q16
         self.max_tokens = max_tokens
         self.last_seq = None
         self.last_obs_hash = None
         self.last_chain_head = None
         self.last_snapshot_id = None
+        self.last_temperature = None  # what the gateway reports it served
 
     def step(self, context):
         prompt = context.encode()
+        # Hard precondition, re-asserted at the point of the socket write
+        # (B4 lesson one layer down): a pin you can't enforce structurally
+        # fails silently on a tired day. No request leaves without it.
+        assert self.temperature_q16 is not None, \
+            "temperature pin lost before socket write; refusing to serve"
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.connect(self.socket_path)
-        hdr = (b"max_tokens: %d\nprompt_len: %d\n\n"
-               % (self.max_tokens, len(prompt)))
+        hdr = (b"max_tokens: %d\ntemperature_q16: %d\nprompt_len: %d\n\n"
+               % (self.max_tokens, self.temperature_q16, len(prompt)))
         request_bytes = hdr + prompt
         s.sendall(request_bytes)
         data = b""
@@ -146,6 +173,11 @@ class GatewayAdapter:
                 self.last_chain_head = line.split(":", 1)[1].strip()
             elif line.startswith("snapshot_id:"):
                 self.last_snapshot_id = line.split(":", 1)[1].strip()
+            elif line.startswith("temperature_q16:"):
+                # what the gateway reports it SERVED, recorded alongside
+                # the snapshot: record what ran, do not assert it. If this
+                # diverges from what was sent, it belongs on the record.
+                self.last_temperature = line.split(":", 1)[1].strip()
 
         verb, target = _parse_call(body)
         if verb is None:
