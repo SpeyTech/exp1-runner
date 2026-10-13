@@ -79,6 +79,32 @@ class ScriptedAdapter:
                         raw="call %s(%s)" % (serve.VERB_NAME[verb], target))
 
 
+class GatewayProtocolError(ValueError):
+    """The gateway's response does not follow its documented framing
+    (axioma-oracle gateway/README.md, "Response framing")."""
+
+
+def parse_gateway_header(header):
+    """Parse the response header bytes (everything before the empty line)
+    per the gateway's framing: lines end with the byte LF; each line is
+    key, ": ", value; the value is every byte after the first ": " up to
+    the LF, decoded as strict UTF-8 and kept exactly (no trimming, no
+    split on Unicode line boundaries). Returns {key: value}. Raises
+    GatewayProtocolError on bytes that are not UTF-8."""
+    fields = {}
+    for line in header.split(b"\n"):
+        key, sep, value = line.partition(b": ")
+        if not sep:
+            continue
+        try:
+            fields[key.decode("ascii")] = value.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise GatewayProtocolError(
+                "gateway response header %r is not UTF-8 (%s)"
+                % (key.decode("ascii", "replace"), e.reason)) from None
+    return fields
+
+
 class GatewayAdapter:
     """L3 gateway adapter over the unix socket. Speaks the gateway line
     protocol unchanged: 'key: value' header lines, blank line, then the
@@ -161,23 +187,26 @@ class GatewayAdapter:
             return Decision(stop=True, raw=data.decode(errors="replace"),
                             request_bytes=request_bytes,
                             response_bytes=data)
-        header = data[:sep].decode(errors="replace")
+        # Header per the gateway's framing: split on the byte LF only and
+        # keep every value exactly. snapshot_id is committed (hashed) by
+        # the driver, so trimming it or splitting it on a Unicode line
+        # boundary would record a model the gateway did not serve.
+        fields = parse_gateway_header(data[:sep])
         body = data[sep + 2:].decode(errors="replace")
 
-        for line in header.splitlines():
-            if line.startswith("seq:"):
-                self.last_seq = int(line.split(":", 1)[1].strip())
-            elif line.startswith("obs_hash:"):
-                self.last_obs_hash = line.split(":", 1)[1].strip()
-            elif line.startswith("chain_head:"):
-                self.last_chain_head = line.split(":", 1)[1].strip()
-            elif line.startswith("snapshot_id:"):
-                self.last_snapshot_id = line.split(":", 1)[1].strip()
-            elif line.startswith("temperature_q16:"):
-                # what the gateway reports it SERVED, recorded alongside
-                # the snapshot: record what ran, do not assert it. If this
-                # diverges from what was sent, it belongs on the record.
-                self.last_temperature = line.split(":", 1)[1].strip()
+        if "seq" in fields:
+            self.last_seq = int(fields["seq"])
+        if "obs_hash" in fields:
+            self.last_obs_hash = fields["obs_hash"]
+        if "chain_head" in fields:
+            self.last_chain_head = fields["chain_head"]
+        if "snapshot_id" in fields:
+            self.last_snapshot_id = fields["snapshot_id"]
+        if "temperature_q16" in fields:
+            # what the gateway reports it SERVED, recorded alongside
+            # the snapshot: record what ran, do not assert it. If this
+            # diverges from what was sent, it belongs on the record.
+            self.last_temperature = fields["temperature_q16"]
 
         verb, target = _parse_call(body)
         if verb is None:
